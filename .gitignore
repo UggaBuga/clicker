@@ -1,0 +1,17 @@
+# сборка и кэш
+__pycache__/
+build/
+dist/
+*.spec
+
+# артефакты пробников и тестов
+trial*.png
+wurm_state.png
+
+# локальные данные пользователя
+clicker_profiles.json
+
+# среда
+.venv/
+*.pyc
+wheels/
