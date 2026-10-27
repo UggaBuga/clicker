@@ -10,6 +10,7 @@ trial*.png
 
 # локальные данные пользователя
 clicker_profiles.json
+clicker_state.json
 
 # среда
 .venv/

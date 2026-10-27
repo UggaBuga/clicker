@@ -32,6 +32,7 @@ pyautogui.FAILSAFE = True  # аварийная остановка: мышь в 
 APP_DIR = os.path.dirname(sys.executable if getattr(sys, 'frozen', False)
                           else os.path.abspath(__file__))
 PROFILES_PATH = os.path.join(APP_DIR, 'clicker_profiles.json')
+STATE_PATH = os.path.join(APP_DIR, 'clicker_state.json')
 
 # ---------- Win32 константы ----------
 WM = {
@@ -320,6 +321,7 @@ class ClickerApp:
                          lambda e: self.root.after(150, self._remember_fg))
         self.refresh_windows()
         self.register_hotkeys()
+        self._load_state()
 
         self.keyhook = RawKeyHook(self._on_key_event_queued)
         self._key_q = queue.Queue()
@@ -332,8 +334,29 @@ class ClickerApp:
     def _on_close(self):
         for e in self.engines.values():
             e.stop_ev.set()
+        self._store_state()
         self.keyhook.stop()
         self.root.destroy()
+
+    def _store_state(self):
+        """Все текущие настройки — на диск, чтобы перезапуск ничего
+        не сбрасывал (прибитый процесс состояние, увы, не сохранит)."""
+        try:
+            with open(STATE_PATH, 'w', encoding='utf-8') as f:
+                json.dump({'settings': self._gather_settings()}, f,
+                          ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _load_state(self):
+        try:
+            with open(STATE_PATH, 'r', encoding='utf-8') as f:
+                d = json.load(f).get('settings')
+            if d:
+                self._apply_settings(d)
+                self.log('Восстановлены настройки с прошлого запуска')
+        except Exception:
+            pass
 
     def _strip_takefocus(self):
         """Кнопки/чекбоксы/радиокнопки не берут фокус — иначе пробел
@@ -553,14 +576,58 @@ class ClickerApp:
 
         logf = ttk.LabelFrame(self.root, text='Журнал', padding=4)
         logf.pack(fill='both', expand=True, padx=10, pady=(0, 8))
-        self.log_list = tk.Listbox(logf, height=7, font=('Consolas', 8),
-                                   activestyle='none')
-        sb = ttk.Scrollbar(logf, orient='vertical',
+        top = ttk.Frame(logf)
+        top.pack(fill='x')
+        ttk.Button(top, text='Копировать всё',
+                   command=self.copy_log).pack(side='right')
+        ttk.Label(top, text='Ctrl+C — копия выделения, Ctrl+A — выделить всё',
+                  foreground='#888').pack(side='left')
+        body = ttk.Frame(logf)
+        body.pack(fill='both', expand=True)
+        self.log_list = tk.Text(body, height=7, font=('Consolas', 8),
+                                state='disabled', wrap='word')
+        sb = ttk.Scrollbar(body, orient='vertical',
                            command=self.log_list.yview)
         self.log_list.configure(yscrollcommand=sb.set)
         self.log_list.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
+        self.log_list.bind('<Control-a>', self._select_all_log)
+        self.log_list.bind('<Control-A>', self._select_all_log)
+        self.log_list.bind('<Control-c>', self._copy_log_selection)
+        self.log_list.bind('<Control-C>', self._copy_log_selection)
+        self.log_menu = tk.Menu(self.root, tearoff=0)
+        self.log_menu.add_command(label='Копировать',
+                                  command=self._copy_log_selection)
+        self.log_menu.add_command(label='Копировать всё',
+                                  command=self.copy_log)
+        self.log_menu.add_command(label='Очистить', command=self.clear_log)
+        self.log_list.bind('<Button-3>', self._log_menu_popup)
         self.log('Кликер готов. Горячие клавиши: мышь — Insert, клавиши — Home.')
+
+    def _select_all_log(self, _event=None):
+        self.log_list.tag_add('sel', '1.0', 'end-1c')
+        return 'break'
+
+    def _copy_log_selection(self, _event=None):
+        try:
+            text = self.log_list.get('sel.first', 'sel.last')
+        except tk.TclError:
+            return 'break'
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        return 'break'
+
+    def copy_log(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.log_list.get('1.0', 'end-1c'))
+
+    def clear_log(self):
+        self.log_list.configure(state='normal')
+        self.log_list.delete('1.0', tk.END)
+        self.log_list.configure(state='disabled')
+
+    def _log_menu_popup(self, event):
+        self.log_menu.post(event.x_root, event.y_root)
 
     # ---------- Окна ----------
 
@@ -786,6 +853,7 @@ class ClickerApp:
         e.stop_ev.clear()
         e.running = True
         e.done = 0
+        self._store_state()
         self._sync_buttons()
         self._update_status()
         if params['mode'] == 'active':
@@ -840,11 +908,15 @@ class ClickerApp:
         (из рабочих потоков — через self._uiq)."""
         if not hasattr(self, 'log_list'):
             return
+        self.log_list.configure(state='normal')
         self.log_list.insert(tk.END,
-                             f'{time.strftime("%H:%M:%S")}  {msg}')
+                             f'{time.strftime("%H:%M:%S")}  {msg}\n')
+        # не больше ~120 строк
+        lines = int(self.log_list.index('end-1c').split('.')[0])
+        if lines > 120:
+            self.log_list.delete('1.0', f'{lines - 120}.0')
         self.log_list.see(tk.END)
-        while self.log_list.size() > 100:
-            self.log_list.delete(0)
+        self.log_list.configure(state='disabled')
 
     # ---------- Параметры ----------
 
