@@ -26,6 +26,8 @@ import winsound
 import pyautogui
 import win32gui
 import win32con
+import win32api
+import win32process
 
 pyautogui.FAILSAFE = True  # аварийная остановка: мышь в левый верхний угол экрана
 
@@ -263,6 +265,58 @@ def cursor_at(x, y, settle=0.15, restore_delay=0.1):
         _user32.SetCursorPos(pt.x, pt.y)
 
 
+@contextlib.contextmanager
+def quiet_focus(hwnd):
+    """Тихий фокус окна: без всплытия на экран, через AttachThreadInput.
+    Некоторые игры игнорируют клавиатуру, пока их окно не в фокусе — этот
+    трюк даёт им фокус клавиатуры, не отнимая экран у браузера.
+    yield возвращает True, если фокус установлен.
+    Требуются равные права процессов (иначе attach возвращает 0) —
+    обычно «запуск от имени администратора» с обеих сторон.
+    """
+    ok = False
+    mine = win32api.GetCurrentThreadId()
+    _, tid = win32process.GetWindowThreadProcessId(hwnd)
+    if _user32.AttachThreadInput(mine, tid, True):
+        prev = _user32.GetFocus()
+        if prev != hwnd:
+            _user32.SetFocus(hwnd)
+        ok = _user32.GetFocus() == hwnd
+    try:
+        yield ok
+    finally:
+        if ok:
+            try:
+                if prev:
+                    _user32.SetFocus(prev)
+                else:
+                    _user32.SetFocus(None)
+            except Exception:
+                pass
+        _user32.AttachThreadInput(mine, tid, False)
+
+
+def switch_to(hwnd):
+    _user32.SwitchToThisWindow(hwnd, True)
+
+
+@contextlib.contextmanager
+def window_upfront(hwnd, settle=0.15, restore_delay=0.05):
+    """Показать окно поверх (SetForegroundWindow не всегда разрешён,
+    SwitchToThisWindow мягче), выполнить действие, вернуть прежнее
+    активное окно. Экран «мигает» — запасной вариант, когда тихий
+    фокус недоступен."""
+    prev = win32gui.GetForegroundWindow()
+    switch_to(hwnd)
+    time.sleep(settle)
+    try:
+        yield
+    finally:
+        time.sleep(restore_delay)
+        if prev and win32gui.IsWindow(prev):
+            switch_to(prev)
+
+
 def bg_key_press(hwnd, combo):
     """Нажатие клавиши в фоновое окно. combo вида 'f5' или 'ctrl+1'."""
     parts = [p for p in combo.lower().replace(' ', '').split('+') if p]
@@ -412,6 +466,7 @@ class ClickerApp:
 
         self.win_combos = {}
         self.tp_vars = {}
+        self._qf_warned = {}
         self._build_mouse_tab()
         self._build_key_tab()
         self._build_common()
@@ -528,6 +583,22 @@ class ClickerApp:
         ttk.Button(row, text='Захватить (5 с)',
                    command=self.capture_key_position).pack(side='left')
 
+        self.key_quiet_focus = tk.BooleanVar(value=True)
+        tk.Checkbutton(pos, text='Тихий фокус: игра получает фокус клавиатуры '
+                                 'на время нажатия, окно не всплывает '
+                                 '(если не срабатывает — запусти кликер '
+                                 '«от администратора», кнопка внизу окна)',
+                       variable=self.key_quiet_focus,
+                       wraplength=460, justify='left',
+                       takefocus=0).pack(anchor='w', pady=(6, 0))
+        self.key_bring_up = tk.BooleanVar(value=False)
+        tk.Checkbutton(pos, text='Показывать окно игры поверх на время '
+                                 'нажатия (экран мигнёт; если тихий фокус '
+                                 'недоступен)',
+                       variable=self.key_bring_up,
+                       wraplength=460, justify='left',
+                       takefocus=0).pack(anchor='w')
+
         self.hk_key = self._hotkey_row(p, 'home', 'key')
 
     def _build_common(self):
@@ -572,6 +643,8 @@ class ClickerApp:
         self.counts_lbl = ttk.Label(self.root, text='Мышь: 0 | Клавиши: 0',
                                     padding=(10, 0))
         self.counts_lbl.pack(fill='x')
+        ttk.Button(self.root, text='Перезапуск от администратора',
+                   command=self.restart_as_admin).pack(anchor='e', padx=10)
         self._update_status()
 
         logf = ttk.LabelFrame(self.root, text='Журнал', padding=4)
@@ -628,6 +701,25 @@ class ClickerApp:
 
     def _log_menu_popup(self, event):
         self.log_menu.post(event.x_root, event.y_root)
+
+    def restart_as_admin(self):
+        """Перезапуск exe с запросом прав администратора (UAC).
+        Нужен для тихого фокуса: AttachThreadInput требует равных прав."""
+        if not getattr(sys, 'frozen', False):
+            messagebox.showinfo('Только для exe',
+                                'Кнопка работает в собранном Clicker.exe. '
+                                'Из исходника запусти python от администратора.')
+            return
+        exe = sys.executable
+        try:
+            rc = ctypes.windll.shell32.ShellExecuteW(
+                None, 'runas', exe, None, None, 1)
+            if rc > 32:
+                self._on_close()
+            else:
+                self.log('Перезапуск от администратора отменён')
+        except Exception as e:
+            messagebox.showerror('Ошибка', f'Не удалось перезапуститься: {e}')
 
     # ---------- Окна ----------
 
@@ -853,6 +945,7 @@ class ClickerApp:
         e.stop_ev.clear()
         e.running = True
         e.done = 0
+        self._qf_warned[which] = False
         self._store_state()
         self._sync_buttons()
         self._update_status()
@@ -953,6 +1046,9 @@ class ClickerApp:
         if p['mode'] == 'background':
             p['hwnd'] = self.selected_hwnd(which)
             p['teleport'] = self.tp_vars[which].get()
+            if which == 'key':
+                p['quiet_focus'] = self.key_quiet_focus.get()
+                p['bring_up'] = self.key_bring_up.get()
             if which == 'key' and self.key_pos_mode.get() == 'fixed':
                 if not self.key_fixed_pos:
                     raise ValueError('Захватите точку мыши — нажмите «Захватить (5 с)»')
@@ -979,18 +1075,37 @@ class ClickerApp:
                                 interval=random.uniform(0.05, 0.1), button=p['button'])
         else:
             if p['mode'] == 'background':
-                if p.get('pos'):
-                    if p.get('teleport', True):
-                        with cursor_at(*p['pos']):
-                            bg_mouse_move(p['hwnd'], *p['pos'])
-                            bg_key_press(p['hwnd'], p['key'])
-                    else:
-                        bg_mouse_move(p['hwnd'], *p['pos'])
-                        bg_key_press(p['hwnd'], p['key'])
+                if p.get('bring_up'):
+                    with window_upfront(p['hwnd']):
+                        self._press_bg(p)
+                elif p.get('quiet_focus', True):
+                    with quiet_focus(p['hwnd']) as ok:
+                        if ok:
+                            self._press_bg(p)
+                        elif not self._qf_warned.get(p['which']):
+                            self._qf_warned[p['which']] = True
+                            self._uiq.put(lambda: self.log(
+                                'Тихий фокус не удался (права процессов?). '
+                                'Запусти кликер «от администратора» '
+                                '(кнопка внизу окна) или включи '
+                                '«Показывать окно игры поверх»'))
                 else:
-                    bg_key_press(p['hwnd'], p['key'])
+                    self._press_bg(p)
             else:
                 send_key(p['key'])
+
+    def _press_bg(self, p):
+        """Фоновое нажатие с учётом захваченной позиции мыши/телепорта."""
+        if p.get('pos'):
+            if p.get('teleport', True):
+                with cursor_at(*p['pos']):
+                    bg_mouse_move(p['hwnd'], *p['pos'])
+                    bg_key_press(p['hwnd'], p['key'])
+            else:
+                bg_mouse_move(p['hwnd'], *p['pos'])
+                bg_key_press(p['hwnd'], p['key'])
+        else:
+            bg_key_press(p['hwnd'], p['key'])
 
     @staticmethod
     def _bg_window_state(p):
@@ -1087,6 +1202,8 @@ class ClickerApp:
                 'hotkey': self.hk_key.get(),
                 'hold': self.key_hold.get(),
                 'teleport': self.tp_vars['key'].get(),
+                'quiet_focus': self.key_quiet_focus.get(),
+                'bring_up': self.key_bring_up.get(),
                 'pos_mode': self.key_pos_mode.get(),
                 'fixed': ([self.key_fixed_pos.x, self.key_fixed_pos.y]
                           if self.key_fixed_pos else None),
@@ -1118,6 +1235,8 @@ class ClickerApp:
         self._set_entry(self.hk_key, k.get('hotkey', 'home'))
         self.key_hold.set(bool(k.get('hold', False)))
         self.tp_vars['key'].set(bool(k.get('teleport', True)))
+        self.key_quiet_focus.set(bool(k.get('quiet_focus', True)))
+        self.key_bring_up.set(bool(k.get('bring_up', False)))
         self.key_pos_mode.set(k.get('pos_mode', 'none'))
         kfx = k.get('fixed')
         if kfx:

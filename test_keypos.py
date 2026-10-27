@@ -4,6 +4,9 @@ import time
 import tkinter as tk
 
 import clicker
+import os as _os, tempfile as _tf
+clicker.STATE_PATH = _os.path.join(_tf.gettempdir(), "state_test_keypos.json")
+_os.path.exists(clicker.STATE_PATH) and _os.remove(clicker.STATE_PATH)
 from clicker import ClickerApp, bg_mouse_move
 
 # --- 1) bg_mouse_move шлёт WM_MOUSEMOVE ---
@@ -29,6 +32,7 @@ clicker.win32gui.IsWindow = lambda hwnd: True
 try:
     p = {'which': 'key', 'action': 'key', 'mode': 'background', 'hwnd': 1,
          'key': 'a', 'pos': (40, 50),
+         'quiet_focus': False, 'bring_up': False,
          'interval': 100, 'jitter': 0, 'repeats': 0}
     app._do_action(p)
 finally:

@@ -5,6 +5,9 @@ import tkinter as tk
 import types
 
 import clicker
+import os as _os, tempfile as _tf
+clicker.STATE_PATH = _os.path.join(_tf.gettempdir(), "state_test_logic.json")
+_os.path.exists(clicker.STATE_PATH) and _os.remove(clicker.STATE_PATH)
 from clicker import ClickerApp
 
 root = tk.Tk()
@@ -41,6 +44,7 @@ assert len(app._hotkey_specs) == 2, 'горячие клавиши не восс
 
 # 4) Триггер горячей клавиши — переключает движок
 assert not app.engines['mouse'].running
+app._do_action = lambda p: None   # без реального клика (мышь может стоять в углу)
 app.interval_var.set('40'); app.jitter_var.set('5')
 app._on_key_event('down', 0x78)   # F9 снова = старт мыши
 pump()
@@ -49,8 +53,6 @@ app._on_key_event('up', 0x78)
 app.engines['mouse'].stop_ev.set()
 pump()
 assert not app.engines['mouse'].running
-app.hk_mouse.delete(0, tk.END); app.hk_mouse.insert(0, 'insert')
-app.register_hotkeys()
 print('3. Запись горячей клавиши (F9) + переключение движка клавишей — OK')
 
 # 4) Независимость движков: оба работают, оба останавливаются

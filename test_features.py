@@ -4,6 +4,9 @@ import time
 import tkinter as tk
 
 import clicker
+import os as _os, tempfile as _tf
+clicker.STATE_PATH = _os.path.join(_tf.gettempdir(), "state_test_features.json")
+_os.path.exists(clicker.STATE_PATH) and _os.remove(clicker.STATE_PATH)
 from clicker import ClickerApp
 
 # --- 1) bg_mouse_click шлёт WM_MOUSEMOVE первым ---
