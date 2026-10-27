@@ -130,4 +130,38 @@ finally:
     _c._user32 = real_u32
 print('8. Телепорт курсора: перемещение к точке и возврат — OK')
 
+# --- 9) свёрнутое фоновое окно: действия пропускаются, счётчик не растёт ---
+import clicker as _c2
+app.interval_var.set('30'); app.jitter_var.set('0')
+app.mouse_mode.set('background')
+app.pos_mode.set('fixed')
+app.fixed_pos = type('P', (), {'x': 100, 'y': 100})()
+p_bg = {'which': 'mouse', 'action': 'mouse', 'mode': 'background',
+        'button': 'left', 'double': False, 'shift': 0,
+        'interval': 30.0, 'jitter': 0.0, 'repeats': 0,
+        'hwnd': 12345, 'teleport': False, 'pos': (100, 100)}
+hits3 = [0]
+app._do_action = lambda p: hits3.__setitem__(0, hits3[0] + 1)
+real_isw, real_isiconic = _c2.win32gui.IsWindow, _c2.win32gui.IsIconic
+_c2.win32gui.IsWindow = lambda h: True
+_c2.win32gui.IsIconic = lambda h: True       # окно свёрнуто
+try:
+    assert app._bg_window_state(p_bg) == 'свёрнуто'
+    app.start_engine('mouse'); pump(12)
+    assert hits3[0] == 0, f'действия выполнялись в свёрнутое окно: {hits3[0]}'
+    assert app.engines['mouse'].done == 0, 'счётчик растёт на пропусках!'
+    assert getattr(app.engines['mouse'], 'warned_iconic', False), 'нет предупреждения'
+    app.engines['mouse'].stop_ev.set(); pump()
+    _c2.win32gui.IsIconic = lambda h: False   # окно развернули
+    app.start_engine('mouse'); pump(12)
+    assert hits3[0] > 0, 'после разворачивания действия не пошли'
+    assert app.engines['mouse'].done > 0
+    app.engines['mouse'].stop_ev.set(); pump()
+    _c2.win32gui.IsWindow = lambda h: False   # окно закрыто
+    assert app._bg_window_state(p_bg) == 'закрыто'
+finally:
+    _c2.win32gui.IsWindow, _c2.win32gui.IsIconic = real_isw, real_isiconic
+    app.mouse_mode.set('active')
+print('9. Свёрнутое/закрытое окно: пропуск, предупреждение, остановка — OK')
+
 print('\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ')

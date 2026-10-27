@@ -790,6 +790,12 @@ class ClickerApp:
         self._update_status()
         if params['mode'] == 'active':
             self._refocus_game()
+        state = self._bg_window_state(params)
+        if state == 'свёрнуто':
+            self.log(f'{e.name}: ВНИМАНИЕ — целевое окно свёрнуто, '
+                     'действия не пойдут, пока его не развернут')
+        elif state == 'закрыто':
+            self.log(f'{e.name}: ВНИМАНИЕ — целевое окно закрыто')
         self.log(f'{e.name}: старт ({params["mode"]}, '
                  f'интервал {params["interval"]:g}±{params["jitter"]:g} мс)')
         e.thread = threading.Thread(target=self._run, args=(e, params), daemon=True)
@@ -914,21 +920,48 @@ class ClickerApp:
             else:
                 send_key(p['key'])
 
+    @staticmethod
+    def _bg_window_state(p):
+        """Состояние фонового окна: None — готово, 'свёрнуто',
+        'закрыто'. Проверять каждый цикл: в свёрнутое окно ввод
+        не доходит, и тихий пропуск действий выглядел бы как поломка."""
+        if p.get('mode') != 'background':
+            return None
+        hwnd = p.get('hwnd')
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return 'закрыто'
+        if win32gui.IsIconic(hwnd):
+            return 'свёрнуто'
+        return None
+
     def _run(self, e, p):
         try:
             while not e.stop_ev.is_set():
                 if p['repeats'] and e.done >= p['repeats']:
                     break
-                try:
-                    self._do_action(p)
-                except pyautogui.FailSafeException:
-                    self._uiq.put(lambda: self.log(
-                        'Аварийная остановка: мышь в углу экрана'))
+                state = self._bg_window_state(p)
+                if state == 'закрыто':
+                    self._uiq.put(lambda n=e.name: self.log(
+                        f'{n}: целевое окно закрыто — движок остановлен'))
                     break
-                except Exception as ex:
-                    self._uiq.put(lambda m=f'Ошибка ({e.name}): {ex}': self.log(m))
-                e.done += 1
-                self._uiq.put(self._update_counts)
+                if state:
+                    if not getattr(e, 'warned_iconic', False):
+                        e.warned_iconic = True
+                        self._uiq.put(lambda n=e.name: self.log(
+                            f'{n}: целевое окно свёрнуто — действия пропускаются. '
+                            f'Разверни окно (Alt-Tab, не сворачивай игру).'))
+                else:
+                    e.warned_iconic = False
+                    try:
+                        self._do_action(p)
+                    except pyautogui.FailSafeException:
+                        self._uiq.put(lambda: self.log(
+                            'Аварийная остановка: мышь в углу экрана'))
+                        break
+                    except Exception as ex:
+                        self._uiq.put(lambda m=f'Ошибка ({e.name}): {ex}': self.log(m))
+                    e.done += 1
+                    self._uiq.put(self._update_counts)
                 delay = max(10.0, p['interval'] + random.uniform(-p['jitter'], p['jitter']))
                 if e.stop_ev.wait(timeout=delay / 1000.0):
                     break
