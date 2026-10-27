@@ -6,7 +6,7 @@ dist/
 
 # артефакты пробников и тестов
 trial*.png
-wurm_state.png
+/*.png
 
 # локальные данные пользователя
 clicker_profiles.json
