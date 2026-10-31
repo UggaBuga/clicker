@@ -357,8 +357,8 @@ class ClickerApp:
     def __init__(self, root):
         self.root = root
         root.title('Кликер')
-        root.geometry('580x800')
-        root.minsize(580, 800)
+        root.geometry('580x1020')
+        root.minsize(580, 990)
 
         self.engines = {'mouse': Engine('Мышь'), 'key': Engine('Клавиши')}
         self._uiq = queue.Queue()
@@ -583,18 +583,19 @@ class ClickerApp:
         ttk.Button(row, text='Захватить (5 с)',
                    command=self.capture_key_position).pack(side='left')
 
-        self.key_quiet_focus = tk.BooleanVar(value=True)
-        tk.Checkbutton(pos, text='Тихий фокус: игра получает фокус клавиатуры '
-                                 'на время нажатия, окно не всплывает '
-                                 '(если не срабатывает — запусти кликер '
-                                 '«от администратора», кнопка внизу окна)',
+        self.key_quiet_focus = tk.BooleanVar(value=False)
+        tk.Checkbutton(pos, text='Тихий фокус: окно получает фокус клавиатуры '
+                                 'на время нажатия, не всплывая (требуются '
+                                 'права администратора; многие игры всё равно '
+                                 'игнорируют клавиатуру без активного окна)',
                        variable=self.key_quiet_focus,
                        wraplength=460, justify='left',
                        takefocus=0).pack(anchor='w', pady=(6, 0))
-        self.key_bring_up = tk.BooleanVar(value=False)
-        tk.Checkbutton(pos, text='Показывать окно игры поверх на время '
-                                 'нажатия (экран мигнёт; если тихий фокус '
-                                 'недоступен)',
+        self.key_bring_up = tk.BooleanVar(value=True)
+        tk.Checkbutton(pos, text='Показывать окно поверх на время нажатия '
+                                 '(окно на мгновение выходит на передний '
+                                 'план, клавиша нажимается, прежнее окно '
+                                 'возвращается — надёжно, но экран мигает)',
                        variable=self.key_bring_up,
                        wraplength=460, justify='left',
                        takefocus=0).pack(anchor='w')
@@ -1082,13 +1083,19 @@ class ClickerApp:
                     with quiet_focus(p['hwnd']) as ok:
                         if ok:
                             self._press_bg(p)
-                        elif not self._qf_warned.get(p['which']):
-                            self._qf_warned[p['which']] = True
-                            self._uiq.put(lambda: self.log(
-                                'Тихий фокус не удался (права процессов?). '
-                                'Запусти кликер «от администратора» '
-                                '(кнопка внизу окна) или включи '
-                                '«Показывать окно игры поверх»'))
+                        else:
+                            # тихий фокус недоступен (обычно нет прав
+                            # администратора) — не пропускаем нажатие,
+                            # а показываем окно поверх, жмём, возвращаем
+                            with window_upfront(p['hwnd']):
+                                self._press_bg(p)
+                            if not self._qf_warned.get(p['which']):
+                                self._qf_warned[p['which']] = True
+                                self._uiq.put(lambda: self.log(
+                                    'Тихий фокус не удался — нажатия идут '
+                                    'через показ окна поверх (экран мигает). '
+                                    'Запусти кликер «от администратора» '
+                                    '(кнопка внизу окна), будет тихо.'))
                 else:
                     self._press_bg(p)
             else:
@@ -1235,8 +1242,8 @@ class ClickerApp:
         self._set_entry(self.hk_key, k.get('hotkey', 'home'))
         self.key_hold.set(bool(k.get('hold', False)))
         self.tp_vars['key'].set(bool(k.get('teleport', True)))
-        self.key_quiet_focus.set(bool(k.get('quiet_focus', True)))
-        self.key_bring_up.set(bool(k.get('bring_up', False)))
+        self.key_quiet_focus.set(bool(k.get('quiet_focus', False)))
+        self.key_bring_up.set(bool(k.get('bring_up', True)))
         self.key_pos_mode.set(k.get('pos_mode', 'none'))
         kfx = k.get('fixed')
         if kfx:
