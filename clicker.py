@@ -353,10 +353,13 @@ class Engine:
 
 # ---------- Приложение ----------
 
+VERSION = '1.1.0'
+
+
 class ClickerApp:
     def __init__(self, root):
         self.root = root
-        root.title('Кликер')
+        root.title(f'Кликер v{VERSION}')
         root.geometry('580x1020')
         root.minsize(580, 990)
 
