@@ -3,7 +3,7 @@
 Кликер / клавишенажималка.
 Вкладки «Мышь» и «Клавиши» — независимые движки, у каждого своя горячая
 клавиша (старт/стоп), свой список фоновых окон и свой счётчик.
-Профили сохраняют все настройки (тайминги, действия, окна, горячие клавиши).
+Профили сохраняют только тайминги и горячие клавиши.
 
 Горячие клавиши — собственный WH_KEYBOARD_LL (RawKeyHook) на выделенном
 потоке с прокачкой GetMessage; события маршалятся в GUI через очередь.
@@ -72,7 +72,21 @@ WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
 WM_KEYUP, WM_SYSKEYUP = 0x0101, 0x0105
 KEYEVENTF_KEYUP = 0x0002
 
+WM_HOTKEY = 0x0312
+MOD_NOREPEAT = 0x4000
+PM_REMOVE = 1
+SYS_HOTKEY_ID = {'mouse': 100, 'key': 101}
+_PeekMessage = ctypes.windll.user32.PeekMessageW
+_PeekMessage.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+                         wintypes.UINT, wintypes.UINT, wintypes.UINT]
+_PeekMessage.restype = wintypes.BOOL
+
 _user32 = ctypes.windll.user32
+_user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int,
+                                   wintypes.UINT, wintypes.UINT]
+_user32.RegisterHotKey.restype = wintypes.BOOL
+_user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.UnregisterHotKey.restype = wintypes.BOOL
 _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p,
                                       wintypes.HINSTANCE, wintypes.DWORD]
 _user32.SetWindowsHookExW.restype = wintypes.HHOOK
@@ -361,11 +375,13 @@ class ClickerApp:
         self.root = root
         root.title(f'Кликер v{VERSION}')
         root.geometry('580x1020')
-        root.minsize(580, 990)
+        root.minsize(580, 860)
 
         self.engines = {'mouse': Engine('Мышь'), 'key': Engine('Клавиши')}
         self._uiq = queue.Queue()
         self._hotkey_specs = {}   # which -> {vk, mods, hold, held}
+        self._hk_last = {}        # which -> время последнего срабатывания (антидребезг)
+        self._sys_hotkeys = set()  # зарегистрированные через RegisterHotKey
         self._recording = None
         self.fixed_pos = None
         self.key_fixed_pos = None
@@ -392,6 +408,7 @@ class ClickerApp:
         for e in self.engines.values():
             e.stop_ev.set()
         self._store_state()
+        self._unregister_sys_hotkeys()
         self.keyhook.stop()
         self.root.destroy()
 
@@ -460,12 +477,13 @@ class ClickerApp:
 
     def _build_ui(self):
         nb = ttk.Notebook(self.root)
-        nb.pack(fill='both', expand=True, padx=10, pady=(10, 4))
+        nb.pack(fill='x', padx=10, pady=(10, 4))
         self.tab_mouse = ttk.Frame(nb, padding=10)
         self.tab_key = ttk.Frame(nb, padding=10)
         nb.add(self.tab_mouse, text='  Мышь  ')
         nb.add(self.tab_key, text='  Клавиши  ')
         self.nb = nb
+        nb.bind('<<NotebookTabChanged>>', self._sync_nb_height)
 
         self.win_combos = {}
         self.tp_vars = {}
@@ -473,6 +491,17 @@ class ClickerApp:
         self._build_mouse_tab()
         self._build_key_tab()
         self._build_common()
+        self._sync_nb_height()
+
+    def _sync_nb_height(self, _event=None):
+        """Высота блокнота = высоте активной вкладки: под короткой
+        вкладкой не остаётся мёртвого пространства."""
+        self.root.update_idletasks()
+        try:
+            tab = self.nb.nametowidget(self.nb.select())
+            self.nb.configure(height=tab.winfo_reqheight())
+        except Exception:
+            pass
 
     def _target_frame(self, parent, which):
         """Блок выбора окна-цели; у каждой вкладки СВОЙ список окон."""
@@ -631,7 +660,7 @@ class ClickerApp:
         self.profile_name.pack(side='left', padx=6)
         ttk.Button(rp, text='Сохранить', command=self.save_profile).pack(side='left')
         ttk.Button(rp, text='Удалить', command=self.delete_profile).pack(side='left', padx=(6, 0))
-        ttk.Label(prof, text='Сохраняет/загружает тайминги, действия, окна и горячие клавиши.',
+        ttk.Label(prof, text='Сохраняет/загружает только тайминги и горячие клавиши.',
                   foreground='#666').pack(anchor='w', pady=(4, 0))
         self._reload_profile_combo()
 
@@ -827,6 +856,46 @@ class ClickerApp:
                 continue
             self._hotkey_specs[which] = {'vk': vk, 'mods': mods,
                                          'hold': hold, 'held': False}
+        self._register_sys_hotkeys()
+
+    # Резервный путь: системные горячие клавиши (RegisterHotKey).
+    # Работают, даже если LL-хук на конкретной машине клавишу не видит;
+    # только простые одиночные клавиши без режима удержания.
+    def _register_sys_hotkeys(self):
+        self._unregister_sys_hotkeys()
+        try:
+            hwnd = self.root.winfo_id()
+        except Exception:
+            return
+        for which, s in self._hotkey_specs.items():
+            if s['hold'] or s['mods']:
+                continue
+            if _user32.RegisterHotKey(hwnd, SYS_HOTKEY_ID[which],
+                                      MOD_NOREPEAT, s['vk']):
+                self._sys_hotkeys.add(which)
+
+    def _unregister_sys_hotkeys(self):
+        try:
+            hwnd = self.root.winfo_id()
+        except Exception:
+            self._sys_hotkeys.clear()
+            return
+        for which in list(self._sys_hotkeys):
+            _user32.UnregisterHotKey(hwnd, SYS_HOTKEY_ID[which])
+        self._sys_hotkeys.clear()
+
+    def _hotkey_toggle(self, which, source):
+        """Старт/стоп по горячей клавише с антидребезгом: хук и
+        RegisterHotKey видят одно и то же нажатие параллельно."""
+        now = time.monotonic()
+        if now - self._hk_last.get(which, 0.0) < 0.35:
+            return
+        self._hk_last[which] = now
+        e = self.engines[which]
+        was_running = e.running
+        self.toggle_engine(which)
+        self.log(f'Горячая клавиша ({source}): {e.name} — '
+                 f'{"стоп" if was_running else "старт"}')
 
     def _on_key_event_queued(self, ev, vk):
         """Колбэк хука (поток хука): только в очередь, GUI качает в _poll_ui."""
@@ -857,18 +926,23 @@ class ClickerApp:
                     s['held'] = True
                     if s['hold']:
                         self.start_engine(which)
+                        self.log(f'Горячая клавиша (хук): '
+                                 f'{self.engines[which].name} — старт (удержание)')
                     else:
-                        self.toggle_engine(which)
+                        self._hotkey_toggle(which, 'хук')
             else:
                 if s['held']:
                     s['held'] = False
                     if s['hold']:
                         self.engines[which].stop_ev.set()
+                        self.log(f'Горячая клавиша (хук): '
+                                 f'{self.engines[which].name} — стоп (отпущена)')
 
     def record_key(self, entry, is_hotkey=False):
         """Записать следующее нажатие клавиш в поле."""
         if is_hotkey:
             self._hotkey_specs = {}  # не срабатывать во время записи
+            self._unregister_sys_hotkeys()
         entry.delete(0, tk.END)
         entry.insert(0, 'Нажмите клавиши…')
         entry.config(foreground='#b58900')
@@ -997,8 +1071,18 @@ class ClickerApp:
                 self._uiq.get_nowait()()
         except queue.Empty:
             pass
+        self._drain_sys_hotkeys()
         self._drain_key_events()
         self.root.after(80, self._poll_ui)
+
+    def _drain_sys_hotkeys(self):
+        """WM_HOTKEY из очереди GUI-потока (резервный путь RegisterHotKey)."""
+        msg = wintypes.MSG()
+        while _PeekMessage(ctypes.byref(msg), None, WM_HOTKEY, WM_HOTKEY,
+                           PM_REMOVE):
+            for which, hid in SYS_HOTKEY_ID.items():
+                if msg.wParam == hid:
+                    self._hotkey_toggle(which, 'системная')
 
     def log(self, msg):
         """Строка в журнал. Вызывать только из GUI-потока
@@ -1264,16 +1348,43 @@ class ClickerApp:
         entry.delete(0, tk.END)
         entry.insert(0, text)
 
+    def _gather_profile(self):
+        """Профиль = только тайминги и горячие клавиши. Действия,
+        окна и точки не сохраняются — они привязаны к конкретному
+        месту и не должны подставляться из профиля другой активности."""
+        return {
+            'interval': self.interval_var.get(),
+            'jitter': self.jitter_var.get(),
+            'repeats': self.repeats_var.get(),
+            'mouse': {'hotkey': self.hk_mouse.get(),
+                      'hold': self.mouse_hold.get()},
+            'key': {'hotkey': self.hk_key.get(),
+                    'hold': self.key_hold.get()},
+        }
+
+    def _apply_profile(self, d):
+        self.interval_var.set(str(d.get('interval', '500')))
+        self.jitter_var.set(str(d.get('jitter', '150')))
+        self.repeats_var.set(str(d.get('repeats', '0')))
+        m = d.get('mouse', {})
+        self._set_entry(self.hk_mouse, m.get('hotkey', 'insert'))
+        self.mouse_hold.set(bool(m.get('hold', False)))
+        k = d.get('key', {})
+        self._set_entry(self.hk_key, k.get('hotkey', 'home'))
+        self.key_hold.set(bool(k.get('hold', False)))
+        self.register_hotkeys()
+        self._sync_buttons()
+
     def save_profile(self):
         name = self.profile_name.get().strip()
         if not name:
             messagebox.showerror('Ошибка', 'Введите имя профиля')
             return
-        self.profiles[name] = self._gather_settings()
+        self.profiles[name] = self._gather_profile()
         self._store_profiles()
         self._reload_profile_combo(select=name)
         self.profile_name.delete(0, tk.END)
-        self.log(f'Профиль сохранён: {name}')
+        self.log(f'Профиль сохранён: {name} (тайминги и горячие клавиши)')
 
     def delete_profile(self):
         name = self.profile_combo.get() or self.profile_name.get().strip()
@@ -1288,7 +1399,7 @@ class ClickerApp:
     def apply_profile(self, _event=None):
         name = self.profile_combo.get()
         if name in self.profiles:
-            self._apply_settings(self.profiles[name])
+            self._apply_profile(self.profiles[name])
             self.log(f'Профиль применён: {name}')
 
 

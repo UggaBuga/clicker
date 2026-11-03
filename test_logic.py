@@ -96,27 +96,31 @@ app.mouse_mode.set('active')
 assert app.tp_vars['mouse'].get() is True and app.tp_vars['key'].get() is True
 print('5. Настраиваемый сдвиг, проверка фонового режима, телепорт по умолчанию — OK')
 
-# 6) Профили: собрать -> применить -> сохранить/удалить
+# 6) Профили: только тайминги и горячие клавиши
 app.interval_var.set('777'); app.jitter_var.set('33'); app.repeats_var.set('5')
 app.mouse_button.set('right')
-app.mouse_double.set(True)
-app.shift_var.set('4')
 app.hk_mouse.delete(0, tk.END); app.hk_mouse.insert(0, 'ctrl+9')
-app.key_entry.delete(0, tk.END); app.key_entry.insert(0, 'f3')
+app.hk_key.delete(0, tk.END); app.hk_key.insert(0, 'f5')
 
-snap = app._gather_settings()
+snap = app._gather_profile()
+# в профиле ничего, кроме таймингов и хоткеев
+assert set(snap) == {'interval', 'jitter', 'repeats', 'mouse', 'key'}
+assert set(snap['mouse']) == {'hotkey', 'hold'}
+assert set(snap['key']) == {'hotkey', 'hold'}
+
 # сброс настроек
 app.interval_var.set('100'); app.mouse_button.set('left')
-app.mouse_double.set(False); app.shift_var.set('0')
-app._apply_settings(snap)
+app.hk_mouse.delete(0, tk.END); app.hk_mouse.insert(0, 'insert')
+app.key_entry.delete(0, tk.END); app.key_entry.insert(0, 'f3')
+app._apply_profile(snap)
 assert app.interval_var.get() == '777' and app.jitter_var.get() == '33'
 assert app.repeats_var.get() == '5'
-assert app.mouse_button.get() == 'right' and app.mouse_double.get() is True
-assert app.shift_var.get() == '4'
-assert app.hk_mouse.get() == 'ctrl+9' and app.key_entry.get() == 'f3'
+assert app.hk_mouse.get() == 'ctrl+9' and app.hk_key.get() == 'f5'
 assert len(app._hotkey_specs) == 2, 'горячие клавиши не переназначены из профиля'
-assert app.tp_vars['mouse'].get() is True, 'телепорт не восстановился из профиля'
-print('6. Профиль: gather -> apply (включая горячие клавиши) — OK')
+# профиль НЕ трогает действия, окна и точки
+assert app.mouse_button.get() == 'left', 'профиль затронул кнопку мыши!'
+assert app.key_entry.get() == 'f3', 'профиль затронул клавишу действия!'
+print('6. Профиль: только тайминги и горячие клавиши; действия не трогает — OK')
 
 # сохранение/удаление на диске
 app.profiles['тест-активность'] = snap
